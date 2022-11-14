@@ -1,0 +1,96 @@
+---
+
+kind: Pod
+apiVersion: v1
+metadata:
+  name: foo-app
+  labels:
+    app: foo
+spec:
+  containers:
+  - name: foo-app
+    image: hashicorp/http-echo:0.2.3
+    args:
+    - "-text=foo"
+
+---
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: foo-service
+spec:
+  selector:
+    app: foo
+  ports:
+  - port: 5678
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sample-content
+data:
+  index-html: |-
+    bar
+
+---
+
+kind: Pod
+apiVersion: v1
+metadata:
+  name: bar-app
+  labels:
+    app: bar
+spec:
+  volumes:
+    - name: config
+      configMap:
+        name: sample-content
+  containers:
+  - name: bar-app
+    image: nginx:latest
+    volumeMounts:
+      - name: config
+        mountPath: /usr/share/nginx/html/index.html
+        subPath: index-html
+
+---
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: bar-service
+spec:
+  selector:
+    app: bar
+  ports:
+  - port: 80
+
+---
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: example-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  rules:
+  - http:
+      paths:
+      - pathType: Prefix
+        path: "/foo"
+        backend:
+          service:
+            name: foo-service
+            port:
+              number: 5678
+      - pathType: Prefix
+        path: "/bar(/|$)(.*)"
+        backend:
+          service:
+            name: bar-service
+            port:
+              number: 80
