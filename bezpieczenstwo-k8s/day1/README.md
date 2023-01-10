@@ -1,0 +1,1 @@
+Zadania z dnia pierwszego
