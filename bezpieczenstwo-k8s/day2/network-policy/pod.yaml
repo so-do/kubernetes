@@ -1,0 +1,14 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  name: test-app
+  namespace: default
+  labels:
+    role: app
+spec:
+  containers:
+  - name: foo-app
+    image: alpine
+    command:
+      - "sleep"
+      - "604800"

@@ -1,0 +1,252 @@
+Wordpress, helm config:
+
+ingress:
+  enabled: true
+  hostname: test.md.sysopspolska.pl
+  annotations:
+    nginx.ingress.kubernetes.io/auth-url: "https://test.md.sysopspolska.pl/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://test.md.sysopspolska.pl/oauth2/start?rd=https://$host$request_uri$is_args$args"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      auth_request_set $token $upstream_http_authorization;
+      proxy_set_header Authorization $token;
+
+Oauth2 proxy:
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    k8s-app: oauth2-proxy
+  name: oauth2-proxy
+  namespace: auth-system
+spec:
+  ports:
+  - name: http
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    k8s-app: oauth2-proxy
+    
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    k8s-app: oauth2-proxy
+  name: oauth2-proxy
+  namespace: auth-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      k8s-app: oauth2-proxy
+  template:
+    metadata:
+      labels:
+        k8s-app: oauth2-proxy
+    spec:
+      containers:
+      - args:
+        - --cookie-secure=false
+        - --provider=oidc
+        - --client-id=oidc-auth-client
+        - --client-secret=...
+        - --oidc-issuer-url=https://auth.md.sysopspolska.pl
+        - --http-address=0.0.0.0:8080
+        - --upstream=file:///dev/null
+        - --email-domain=*
+        - --set-authorization-header=true
+        - --scope=openid profile email groups
+        - --ssl-insecure-skip-verify
+        env:
+        # docker run -ti --rm python:3-alpine python -c 'import secrets,base64; print(base64.b64encode(base64.b64encode(secrets.token_bytes(16))));'
+        - name: OAUTH2_PROXY_COOKIE_SECRET
+          value: S4H1d8atOd7uyHMSxUFAIw==
+        image: sguyennet/oauth2-proxy:header-2.2
+        imagePullPolicy: Always
+        name: oauth2-proxy
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+
+---
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+  name: oauth-proxy
+  namespace: auth-system
+spec:
+  rules:
+  - host: test.md.sysopspolska.pl
+    http:
+      paths:
+      - backend:
+          service:
+            name: oauth2-proxy
+            port:
+              number: 8080
+        path: /oauth2
+        pathType: ImplementationSpecific
+    
+Dex:
+config:
+  issuer: https://auth.md.sysopspolska.pl
+  storage:
+    type: kubernetes
+    config:
+      inCluster: true
+  logger:
+    format: "json"
+  oauth2:
+    skipApprovalScreen: true
+
+  connectors:
+    - type: github
+      id: github
+      name: GitHub
+      config:
+        clientID: ...
+        clientSecret: ...
+        redirectURI: https://auth.md.sysopspolska.pl/callback
+
+  staticClients:
+    - id: oidc-auth-client
+      redirectURIs:
+        - 'http://test.md.sysopspolska.pl/oauth2/callback'
+      name: 'oidc-auth-client'
+      secret: '...'
+
+ingress:
+  enabled: true
+
+  hosts:
+    - host: auth.md.sysopspolska.pl
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+    
+Gangway:
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gangway
+  namespace: auth-system
+data:
+  gangway.yaml: |
+    clusterName: "Kind"
+    apiServerURL: "https://...:6443"
+    authorizeURL: "https://auth.md.sysopspolska.pl/auth"
+    tokenURL: "https://auth.md.sysopspolska.pl/token"
+    clientID: "oidc-auth-client"
+    clientSecret: "..."
+    redirectURL: "https://kubectl.md.sysopspolska.pl/callback"
+    scopes: ["openid", "profile", "email", "offline_access", "groups"]
+    usernameClaim: "email"
+    emailClaim: "email"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gangway
+  namespace: auth-system
+  labels:
+    app: gangway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gangway
+  strategy:
+  template:
+    metadata:
+      labels:
+        app: gangway
+        revision: "1"
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/master: ""
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/master
+      containers:
+        - name: gangway
+          image: gcr.io/heptio-images/gangway:v2.0.0
+          imagePullPolicy: Always
+          command: ["gangway", "-config", "/gangway/gangway.yaml"]
+          env:
+            - name: GANGWAY_SESSION_SECURITY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gangway-key
+                  key: sesssionkey
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "100Mi"
+            limits:
+              cpu: "100m"
+              memory: "100Mi"
+          volumeMounts:
+            - name: gangway
+              mountPath: /gangway/
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 20
+            timeoutSeconds: 1
+            periodSeconds: 60
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            timeoutSeconds: 1
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: gangway
+          configMap:
+            name: gangway
+
+---
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: gangway-svc
+  namespace: auth-system
+  labels:
+    app: gangway
+spec:
+  type: ClusterIP
+  ports:
+    - name: "http"
+      protocol: TCP
+      port: 80
+      targetPort: "http"
+  selector:
+    app: gangway
+
+---
+
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: gangway
+  namespace: auth-system
+spec:
+  rules:
+  - host: kubectl.md.sysopspolska.pl
+    http:
+      paths:
+      - backend:
+          serviceName: gangway-svc
+          servicePort: http

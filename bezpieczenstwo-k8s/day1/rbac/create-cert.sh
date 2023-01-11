@@ -37,6 +37,8 @@ EOF
 kubectl apply -f user1.yaml
 kubectl apply -f user2.yaml
 
+kubectl get csr
+
 kubectl certificate approve user1
 kubectl certificate approve user2
 
